@@ -128,6 +128,13 @@ jobs:
           ref: ${{ needs.build-test.outputs.target_sha }}
           fetch-depth: 0
 
+      - name: Set up Java 21 (for the SAST stage)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
       - name: Secret scan (full git history)
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
