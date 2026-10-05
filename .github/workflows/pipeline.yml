@@ -106,6 +106,13 @@ jobs:
             backend/target/failsafe-reports
           retention-days: 14
 
+      - name: Upload the built API artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-jar
+          path: backend/target/*.jar
+          retention-days: 7
+
   # ─────────────────────────────────────────────────────────────────────
   # Stage 2 — Security and Dependency Scan
   # ─────────────────────────────────────────────────────────────────────
