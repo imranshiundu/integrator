@@ -134,10 +134,25 @@ jobs:
             detect --source /repo --redact --verbose --exit-code 1
           echo "No secrets in the repository history."
 
+      - name: Download the built API artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-jar
+          path: api-jar
+
       - name: Dependency vulnerability scan (Trivy)
         run: |
-          docker run --rm -v "$PWD:/src" -v /tmp/cache:/root/.cache aquasec/trivy:latest \
-            fs --scanners vuln \
+          # The Spring Boot fat jar embeds every dependency jar under
+          # BOOT-INF/lib: extracting them gives trivy the complete physical
+          # dependency set locally, so no remote pom/BOM resolution happens
+          # (Maven Central rate-limits CI runners with 429s), and offline
+          # mode makes that a guarantee. The npm lockfile is scanned too.
+          mkdir -p scan-target/libs scan-target/frontend
+          unzip -j -o api-jar/*.jar 'BOOT-INF/lib/*.jar' -d scan-target/libs >/dev/null
+          echo "extracted $(ls scan-target/libs | wc -l) embedded dependency jars"
+          cp frontend/package-lock.json scan-target/frontend/
+          docker run --rm -v "$PWD/scan-target:/src" -v /tmp/cache:/root/.cache aquasec/trivy:latest \
+            fs --scanners vuln --offline-scan \
             --severity CRITICAL,HIGH \
             --exit-code 1 \
             --ignore-unfixed \
