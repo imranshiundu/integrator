@@ -254,7 +254,7 @@ jobs:
             -e FLYWAY_DEFAULT_SCHEMA=public \
             "$FLYWAY_IMAGE" validate
 
-          PGPASSWORD=ci psql -h postgres -U ci -d iloveshopping -t <<'SQL'
+          PGPASSWORD=ci psql -h 127.0.0.1 -p 5432 -U ci -d iloveshopping -t <<'SQL'
             SELECT 'tables_ok' WHERE count(*) = 17 FROM information_schema.tables WHERE table_schema = 'public';
           SQL
 
