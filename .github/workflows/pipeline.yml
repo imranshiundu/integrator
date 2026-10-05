@@ -219,7 +219,9 @@ jobs:
         run: |
           echo "Migrations in this revision:"
           ls backend/src/main/resources/db/migration/
-          docker run --rm \
+          DOCKER_NETWORK=$(docker network ls --filter "driver=bridge" --format "{{.Name}}" | grep -m1 '^github_' || true)
+          [ -z "$DOCKER_NETWORK" ] && { echo "could not determine the job's service network" >&2; exit 1; }
+          docker run --rm --network "$DOCKER_NETWORK" \
             -v "$PWD/backend/src/main/resources/db/migration:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://postgres:5432/iloveshopping \
             -e FLYWAY_USER=ci -e FLYWAY_PASSWORD=ci \
@@ -229,7 +231,8 @@ jobs:
 
       - name: Idempotence check — re-running must be a no-op
         run: |
-          out=$(docker run --rm \
+          DOCKER_NETWORK=${DOCKER_NETWORK:-$(docker network ls --filter "driver=bridge" --format "{{.Name}}" | grep -m1 '^github_' || true)}
+          out=$(docker run --rm --network "$DOCKER_NETWORK" \
             -v "$PWD/backend/src/main/resources/db/migration:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://postgres:5432/iloveshopping \
             -e FLYWAY_USER=ci -e FLYWAY_PASSWORD=ci \
@@ -242,7 +245,8 @@ jobs:
 
       - name: Validate the applied schema
         run: |
-          docker run --rm \
+          DOCKER_NETWORK=${DOCKER_NETWORK:-$(docker network ls --filter "driver=bridge" --format "{{.Name}}" | grep -m1 '^github_' || true)}
+          docker run --rm --network "$DOCKER_NETWORK" \
             -v "$PWD/backend/src/main/resources/db/migration:/flyway/sql:ro" \
             -e FLYWAY_URL=jdbc:postgresql://postgres:5432/iloveshopping \
             -e FLYWAY_USER=ci -e FLYWAY_PASSWORD=ci \
