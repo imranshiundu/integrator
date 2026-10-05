@@ -1,0 +1,319 @@
+name: CI/CD pipeline
+
+# Four sequential gates for i-love-shopping:
+#   1. build-test        — compile + full test suite (unit, API, containerized user-flow)
+#   2. security-scan     — secrets in git history, dependency CVEs, static analysis
+#   3. db-migration      — every Flyway migration applied to a clean Postgres, idempotence check
+#   4. deliver           — production Docker images as versioned artifacts, deploy, validate
+#
+# Runs on GitHub Actions out of the box and is Gitea Actions compatible —
+# on gitea.kood.tech set TARGET_REPO below to imranshiundu/i-love-shopping3.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: "Target repo ref to build (default: its master)"
+        required: false
+        default: ""
+
+env:
+  TARGET_REPO: imranshiundu/i-love-shopping1
+  # Gitea deployments: override to imranshiundu/i-love-shopping3
+  FLYWAY_IMAGE: flyway/flyway:10
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 1 — Build and Test
+  # ─────────────────────────────────────────────────────────────────────
+  build-test:
+    name: "Stage 1 · Build & Test"
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.ref.outputs.sha }}
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: ${{ inputs.target_ref || '' }}
+          fetch-depth: 0
+
+      - id: ref
+        name: Record the exact target revision under test
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build API and run the test suite (unit + containerized user-flow)
+        working-directory: backend
+        env:
+          # docker-java API pin — works on any engine >= API 1.44
+          JAVA_TOOL_OPTIONS: -Dapi.version=1.44
+        run: |
+          ./mvnw -B -ntp verify
+          # context test + unit suite run in surefire; the user-flow suite
+          # (real PostgreSQL/Redis/RabbitMQ containers through the HTTP
+          # stack) runs in failsafe after it.
+
+      - name: Summarise test results
+        if: always()
+        run: |
+          {
+            echo "## Test report"
+            echo
+            echo "| Suite | Tests | Failures | Errors | Skipped |"
+            echo "|---|---|---|---|---|"
+            for f in backend/target/surefire-reports/*.txt backend/target/failsafe-reports/*.txt; do
+              [ -f "$f" ] || continue
+              name=$(basename "$f" .txt)
+              line=$(grep -m1 "Tests run:" "$f")
+              t=$(echo "$line" | sed -E 's/.*Tests run: ([0-9]+).*/\1/')
+              f_=$(echo "$line" | sed -E 's/.*Failures: ([0-9]+).*/\1/')
+              e=$(echo "$line" | sed -E 's/.*Errors: ([0-9]+).*/\1/')
+              s=$(echo "$line" | sed -E 's/.*Skipped: ([0-9]+).*/\1/')
+              echo "| $name | $t | $f_ | $e | $s |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the storefront (production)
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            backend/target/surefire-reports
+            backend/target/failsafe-reports
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 2 — Security and Dependency Scan
+  # ─────────────────────────────────────────────────────────────────────
+  security-scan:
+    name: "Stage 2 · Security & Dependency Scan"
+    runs-on: ubuntu-latest
+    needs: build-test
+    steps:
+      - name: Checkout target repository (same revision as stage 1)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: ${{ needs.build-test.outputs.target_sha }}
+          fetch-depth: 0
+
+      - name: Secret scan (full git history)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source /repo --redact --verbose --exit-code 1
+          echo "No secrets in the repository history."
+
+      - name: Dependency vulnerability scan (Trivy)
+        run: |
+          docker run --rm -v "$PWD:/src" -v /tmp/cache:/root/.cache aquasec/trivy:latest \
+            fs --scanners vuln \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --ignore-unfixed \
+            /src
+          echo "No CRITICAL/HIGH vulnerabilities with fixes available."
+
+      - name: Static analysis (SpotBugs, gate on high severity)
+        working-directory: backend
+        env:
+          JAVA_TOOL_OPTIONS: -Dapi.version=1.44
+        run: |
+          ./mvnw -B -ntp compile com.github.spotbugs:spotbugs-maven-plugin:4.8.6.6:check \
+            -Dspotbugs.threshold=High -Dspotbugs.effort=Max \
+            -Dspotbugs.xmlOutput=true
+          echo "No high-severity static analysis findings."
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            backend/target/spotbugsXml.xml
+            backend/target/spotbugs
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 3 — Database Migration
+  # ─────────────────────────────────────────────────────────────────────
+  db-migration:
+    name: "Stage 3 · Database Migration"
+    runs-on: ubuntu-latest
+    needs: security-scan
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: iloveshopping
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout target repository (same revision as stage 1)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: ${{ needs.build-test.outputs.target_sha }}
+
+      - name: Apply every migration to the clean database
+        run: |
+          echo "Migrations in this revision:"
+          ls backend/src/main/resources/db/migration/
+          docker run --rm \
+            -v "$PWD/backend/src/main/resources/db/migration:/flyway/sql:ro" \
+            -e FLYWAY_URL=jdbc:postgresql://postgres:5432/iloveshopping \
+            -e FLYWAY_USER=ci -e FLYWAY_PASSWORD=ci \
+            -e FLYWAY_LOCATIONS=filesystem:/flyway/sql \
+            -e FLYWAY_DEFAULT_SCHEMA=public \
+            "$FLYWAY_IMAGE" migrate
+
+      - name: Idempotence check — re-running must be a no-op
+        run: |
+          out=$(docker run --rm \
+            -v "$PWD/backend/src/main/resources/db/migration:/flyway/sql:ro" \
+            -e FLYWAY_URL=jdbc:postgresql://postgres:5432/iloveshopping \
+            -e FLYWAY_USER=ci -e FLYWAY_PASSWORD=ci \
+            -e FLYWAY_LOCATIONS=filesystem:/flyway/sql \
+            -e FLYWAY_DEFAULT_SCHEMA=public \
+            "$FLYWAY_IMAGE" migrate)
+          echo "$out"
+          echo "$out" | grep -q "No migrations found" || echo "$out" | grep -q "up to date"
+          # grep exits 1 when neither phrase is present -> step fails
+
+      - name: Validate the applied schema
+        run: |
+          docker run --rm \
+            -v "$PWD/backend/src/main/resources/db/migration:/flyway/sql:ro" \
+            -e FLYWAY_URL=jdbc:postgresql://postgres:5432/iloveshopping \
+            -e FLYWAY_USER=ci -e FLYWAY_PASSWORD=ci \
+            -e FLYWAY_LOCATIONS=filesystem:/flyway/sql \
+            -e FLYWAY_DEFAULT_SCHEMA=public \
+            "$FLYWAY_IMAGE" validate
+
+          PGPASSWORD=ci psql -h postgres -U ci -d iloveshopping -t <<'SQL'
+            SELECT 'tables_ok' WHERE count(*) = 17 FROM information_schema.tables WHERE table_schema = 'public';
+          SQL
+
+      - name: Summarise the migration stage
+        run: |
+          {
+            echo "## Database migration stage"
+            echo
+            echo "All migrations applied to a clean Postgres 16 and validated:"
+            echo
+            PGPASSWORD=ci psql -h postgres -U ci -d iloveshopping -c \
+              "SELECT version, description, success, installed_on FROM flyway_schema_history ORDER BY installed_rank;"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Stage 4 — Core Delivery
+  # ─────────────────────────────────────────────────────────────────────
+  deliver:
+    name: "Stage 4 · Deliver & Validate"
+    runs-on: ubuntu-latest
+    needs: db-migration
+    env:
+      TARGET_SHA: ${{ needs.build-test.outputs.target_sha }}
+      SHORT_SHA: ${{ needs.build-test.outputs.target_sha }}
+    steps:
+      - name: Checkout pipeline scripts
+        uses: actions/checkout@v4
+
+      - name: Checkout target repository (same revision as stage 1)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          ref: ${{ needs.build-test.outputs.target_sha }}
+          path: target-repo
+
+      - name: Build the production Docker images
+        working-directory: target-repo
+        run: |
+          docker compose -f docker/docker-compose.yml build api frontend
+
+      - name: Tag images as versioned artifacts
+        id: tag
+        run: |
+          sha7="${TARGET_SHA:0:7}"
+          docker tag docker-api "iloveshopping/api:$sha7"
+          docker tag docker-frontend "iloveshopping/frontend:$sha7"
+          echo "sha7=$sha7" >> "$GITHUB_OUTPUT"
+          docker images "iloveshopping/*" --format "{{.Repository}}:{{.Tag}}"
+
+      - name: Store versioned images (rollback artifact storage)
+        run: |
+          sha7="${TARGET_SHA:0:7}"
+          mkdir -p dist
+          docker save "iloveshopping/api:$sha7" "iloveshopping/frontend:$sha7" | gzip > "dist/iloveshopping-$sha7-images.tar.gz"
+          ls -lh dist/
+
+      - name: Deliver the stack (environment injected at deploy time, never baked into source)
+        working-directory: target-repo
+        run: |
+          # Environment variables are injected here — the same twelve-factor
+          # flow the target's docker-compose expects. Secrets never come from
+          # the repository: they come from the deployment environment.
+          export DATA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+          export JWT_ACCESS_SECRET="$(openssl rand -base64 32)"
+          export JWT_REFRESH_SECRET="$(openssl rand -base64 32)"
+          export MAIL_HOST=localhost MAIL_PORT=1025 MAIL_SMTP_AUTH=false MAIL_SMTP_STARTTLS=false
+          export RECAPTCHA_SECRET_KEY=dev-test-secret
+          export CORS_ALLOWED_ORIGINS=http://localhost:3000
+          export FRONTEND_URL=http://localhost:3000
+          docker compose -f docker/docker-compose.yml up -d postgres redis rabbitmq mailhog
+          "$GITHUB_WORKSPACE/scripts/deploy.sh" --local \
+            --compose docker/docker-compose.yml \
+            --tag "${TARGET_SHA:0:7}"
+
+      - name: Validate the deployment (health, DB, critical user flows)
+        run: |
+          sleep 25   # let the API finish booting
+          "$GITHUB_WORKSPACE/scripts/validate-deployment.sh" http://localhost:8080/api/v1 http://localhost:3000
+
+      - name: Upload versioned images
+        uses: actions/upload-artifact@v4
+        with:
+          name: iloveshopping-${{ steps.tag.outputs.sha7 }}-images
+          path: dist/
+          retention-days: 30
+
+      - name: Deployment summary
+        run: |
+          {
+            echo "## Delivery"
+            echo
+            echo "Version \`${TARGET_SHA:0:7}\` delivered and validated:"
+            echo "- Docker images: \`iloveshopping/api\`, \`iloveshopping/frontend\` (stored as artifacts for rollback)"
+            echo "- Deployment validation: health, database round-trip, register/login, browse, cart, guest checkout"
+          } >> "$GITHUB_STEP_SUMMARY"
