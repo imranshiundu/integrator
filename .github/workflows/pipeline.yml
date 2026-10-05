@@ -265,7 +265,7 @@ jobs:
             echo
             echo "All migrations applied to a clean Postgres 16 and validated:"
             echo
-            PGPASSWORD=ci psql -h postgres -U ci -d iloveshopping -c \
+            PGPASSWORD=ci psql -h 127.0.0.1 -p 5432 -U ci -d iloveshopping -c \
               "SELECT version, description, success, installed_on FROM flyway_schema_history ORDER BY installed_rank;"
           } >> "$GITHUB_STEP_SUMMARY"
 
