@@ -332,6 +332,14 @@ jobs:
           sleep 25   # let the API finish booting
           "$GITHUB_WORKSPACE/scripts/validate-deployment.sh" http://localhost:8080/api/v1 http://localhost:3000
 
+      - name: Dump container logs on failure
+        if: failure()
+        working-directory: target-repo
+        run: |
+          docker compose -f docker/docker-compose.yml ps
+          docker compose -f docker/docker-compose.yml logs --tail=120 api || true
+          docker compose -f docker/docker-compose.yml logs --tail=50 frontend || true
+
       - name: Upload versioned images
         uses: actions/upload-artifact@v4
         with:
