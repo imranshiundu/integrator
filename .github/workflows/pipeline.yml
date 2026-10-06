@@ -323,6 +323,9 @@ jobs:
           export CORS_ALLOWED_ORIGINS=http://localhost:3000
           export FRONTEND_URL=http://localhost:3000
           docker compose -f docker/docker-compose.yml up -d postgres redis rabbitmq mailhog
+          echo "DATA_ENCRYPTION_KEY length: ${#DATA_ENCRYPTION_KEY}"
+          echo "-- compose-resolved encryption env wiring --"
+          docker compose -f docker/docker-compose.yml config | grep -n "DATA_ENCRYPTION_KEY" | sed 's/=.*$/=<value>/'
           "$GITHUB_WORKSPACE/scripts/deploy.sh" --local \
             --compose docker/docker-compose.yml \
             --tag "${{ steps.tag.outputs.sha7 }}"
