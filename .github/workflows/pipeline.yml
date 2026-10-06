@@ -340,7 +340,7 @@ jobs:
         working-directory: target-repo
         run: |
           docker compose -f docker/docker-compose.yml ps
-          docker inspect iloveshopping-api --format '{{range .Config.Env}}{{println .}}{{end}}' | sed 's/DATA_ENCRYPTION_KEY=.*/DATA_ENCRYPTION_KEY=<redacted>/; s/JWT_.*_SECRET=.*/& (redacted)/'
+          docker inspect iloveshopping-api --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '{ if ($1 ~ /(SECRET|KEY|PASSWORD)$/) { printf "%s=<redacted, %d chars>\n", $1, length($0)-length($1)-1 } else print }'
           docker compose -f docker/docker-compose.yml logs --tail=120 api || true
           docker compose -f docker/docker-compose.yml logs --tail=50 frontend || true
 
