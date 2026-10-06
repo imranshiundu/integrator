@@ -276,9 +276,6 @@ jobs:
     name: "Stage 4 · Deliver & Validate"
     runs-on: ubuntu-latest
     needs: db-migration
-    env:
-      TARGET_SHA: ${{ needs.build-test.outputs.target_sha }}
-      SHORT_SHA: ${{ needs.build-test.outputs.target_sha }}
     steps:
       - name: Checkout pipeline scripts
         uses: actions/checkout@v4
@@ -298,15 +295,16 @@ jobs:
       - name: Tag images as versioned artifacts
         id: tag
         run: |
-          sha7="${TARGET_SHA:0:7}"
+          sha7="$(git -C target-repo rev-parse --short HEAD)"
+          echo "sha7=$sha7" >> "$GITHUB_OUTPUT"
+          echo "Tagging images as iloveshopping/*:$sha7"
           docker tag docker-api "iloveshopping/api:$sha7"
           docker tag docker-frontend "iloveshopping/frontend:$sha7"
-          echo "sha7=$sha7" >> "$GITHUB_OUTPUT"
           docker images "iloveshopping/*" --format "{{.Repository}}:{{.Tag}}"
 
       - name: Store versioned images (rollback artifact storage)
         run: |
-          sha7="${TARGET_SHA:0:7}"
+          sha7="${{ steps.tag.outputs.sha7 }}"
           mkdir -p dist
           docker save "iloveshopping/api:$sha7" "iloveshopping/frontend:$sha7" | gzip > "dist/iloveshopping-$sha7-images.tar.gz"
           ls -lh dist/
@@ -327,7 +325,7 @@ jobs:
           docker compose -f docker/docker-compose.yml up -d postgres redis rabbitmq mailhog
           "$GITHUB_WORKSPACE/scripts/deploy.sh" --local \
             --compose docker/docker-compose.yml \
-            --tag "${TARGET_SHA:0:7}"
+            --tag "${{ steps.tag.outputs.sha7 }}"
 
       - name: Validate the deployment (health, DB, critical user flows)
         run: |
@@ -346,7 +344,7 @@ jobs:
           {
             echo "## Delivery"
             echo
-            echo "Version \`${TARGET_SHA:0:7}\` delivered and validated:"
+            echo "Version \`${{ steps.tag.outputs.sha7 }}\` delivered and validated:"
             echo "- Docker images: \`iloveshopping/api\`, \`iloveshopping/frontend\` (stored as artifacts for rollback)"
             echo "- Deployment validation: health, database round-trip, register/login, browse, cart, guest checkout"
           } >> "$GITHUB_STEP_SUMMARY"
