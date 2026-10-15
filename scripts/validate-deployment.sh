@@ -29,6 +29,20 @@ check "API health is UP" "$(echo "$H" | jqv "import json,sys; print(json.load(sy
 F=$(curl -s -o /dev/null -w "%{http_code}" -m 20 "$FRONTEND/")
 check "frontend responds 200" "$([ "$F" = "200" ] && echo True || echo False)" "got $F"
 
+echo "validate: observability wiring (metrics endpoint serves Prometheus format)"
+API_CONTAINER="$(docker ps --filter name=iloveshopping-api -q | head -1)"
+if [ -n "$API_CONTAINER" ]; then
+  PROM=$(docker exec "$API_CONTAINER" wget -qO- --timeout=5 http://localhost:9090/actuator/prometheus 2>/dev/null | head -20 || true)
+  case "$PROM" in
+    *ils_users_registered_total*|*jvm_memory_used_bytes*|*http_server_requests*)
+      echo "  PASS: /actuator/prometheus exposes metrics"; PASS=$((PASS+1)) ;;
+    *)
+      echo "  FAIL: metrics endpoint empty or unreachable"; FAIL=$((FAIL+1)); echo "$PROM" | head -5 ;;
+  esac
+else
+  echo "  FAIL: api container not found"; FAIL=$((FAIL+1))
+fi
+
 echo "validate: critical user flows"
 RAND=$RANDOM
 EMAIL="ci-validate-$RAND@example.com"
