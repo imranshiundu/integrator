@@ -32,10 +32,15 @@ check "frontend responds 200" "$([ "$F" = "200" ] && echo True || echo False)" "
 echo "validate: observability wiring (metrics endpoint serves Prometheus format)"
 API_CONTAINER="$(docker ps --filter name=iloveshopping-api -q | head -1)"
 if [ -n "$API_CONTAINER" ]; then
-  BODY=$(docker exec "$API_CONTAINER" curl -sf -m 5 http://localhost:9090/actuator/prometheus 2>/dev/null | head -30 || true)
+  BODY=$(docker exec "$API_CONTAINER" curl -sf -m 5 http://localhost:9090/actuator/prometheus 2>/dev/null || true)
   case "$BODY" in
-    *ils_users_registered_total*|*jvm_memory_used_bytes*|*http_server_requests*)
-      echo "  PASS: /actuator/prometheus exposes metrics"; PASS=$((PASS+1)) ;;
+    *"# HELP"*)
+      case "$BODY" in
+        *ils_users_registered_total*)
+          echo "  PASS: /actuator/prometheus serves Prometheus format with the business counters registered"; PASS=$((PASS+1)) ;;
+        *)
+          echo "  FAIL: metrics served but the ils_* business counter family is missing"; FAIL=$((FAIL+1)); echo "$BODY" | head -5 ;;
+      esac ;;
     *)
       HTTP_CODE=$(docker exec "$API_CONTAINER" curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:9090/actuator/prometheus 2>/dev/null || echo "unreachable")
       echo "  FAIL: metrics endpoint answered HTTP $HTTP_CODE (body head follows)"; FAIL=$((FAIL+1)); echo "$BODY" | head -5 ;;
