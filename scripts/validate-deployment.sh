@@ -32,12 +32,16 @@ check "frontend responds 200" "$([ "$F" = "200" ] && echo True || echo False)" "
 echo "validate: observability wiring (metrics endpoint serves Prometheus format)"
 API_CONTAINER="$(docker ps --filter name=iloveshopping-api -q | head -1)"
 if [ -n "$API_CONTAINER" ]; then
-  PROM=$(docker exec "$API_CONTAINER" curl -sf -m 5 http://localhost:9090/actuator/prometheus 2>/dev/null | head -20 || true)
-  case "$PROM" in
+  echo "  -- listening ports inside the API container --"
+  docker exec "$API_CONTAINER" netstat -tln 2>/dev/null | head -10 || echo "  (netstat unavailable)"
+  HTTP_CODE=$(docker exec "$API_CONTAINER" curl -s -m 5 -o /dev/null -w '%{http_code}' http://localhost:9090/actuator/prometheus 2>/dev/null || echo "exit=$?")
+  echo "  -- GET :9090/actuator/prometheus -> $HTTP_CODE --"
+  BODY=$(docker exec "$API_CONTAINER" curl -s -m 5 http://localhost:9090/actuator/prometheus 2>/dev/null | head -30 || true)
+  case "$BODY" in
     *ils_users_registered_total*|*jvm_memory_used_bytes*|*http_server_requests*)
       echo "  PASS: /actuator/prometheus exposes metrics"; PASS=$((PASS+1)) ;;
     *)
-      echo "  FAIL: metrics endpoint empty or unreachable"; FAIL=$((FAIL+1)); echo "$PROM" | head -5 ;;
+      echo "  FAIL: metrics endpoint empty or unexpected (body head follows)"; FAIL=$((FAIL+1)); echo "$BODY" | head -5 ;;
   esac
 else
   echo "  FAIL: api container not found"; FAIL=$((FAIL+1))
