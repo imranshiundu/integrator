@@ -32,7 +32,7 @@ check "frontend responds 200" "$([ "$F" = "200" ] && echo True || echo False)" "
 echo "validate: observability wiring (metrics endpoint serves Prometheus format)"
 API_CONTAINER="$(docker ps --filter name=iloveshopping-api -q | head -1)"
 if [ -n "$API_CONTAINER" ]; then
-  PROM=$(docker exec "$API_CONTAINER" wget -qO- --timeout=5 http://localhost:9090/actuator/prometheus 2>/dev/null | head -20 || true)
+  PROM=$(docker exec "$API_CONTAINER" curl -sf -m 5 http://localhost:9090/actuator/prometheus 2>/dev/null | head -20 || true)
   case "$PROM" in
     *ils_users_registered_total*|*jvm_memory_used_bytes*|*http_server_requests*)
       echo "  PASS: /actuator/prometheus exposes metrics"; PASS=$((PASS+1)) ;;
