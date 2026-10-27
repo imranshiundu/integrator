@@ -24,6 +24,13 @@ Only code that passes every gate is delivered.
 | 3 | **Database Migration** | Every Flyway migration in the target repo is applied to a **clean, throwaway Postgres 16** container — validating syntax, ordering and applicability (a migration that can't run on a fresh schema never reaches production). The deployment script additionally takes a `pg_dump` backup before touching any real database. | any migration fails or leaves the schema in a non-repeatable state |
 | 4 | **Core Delivery** | Builds the production Docker images (`api`, `frontend`) from the target repo's Dockerfiles, stores them as **versioned artifacts** tagged with the commit SHA, delivers them to the target (compose up, environment variables injected from the deployment environment — never from source), runs the deployment validation (health, DB round-trip, critical user flows), and supports one-command rollback to the previous artifact + database backup. | deployment validation fails — which also triggers the documented rollback path |
 
+## Related repositories
+
+| Repo | What it is |
+|---|---|
+| [i-love-shopping](https://gitea.kood.tech/imranshiundu/i-love-shopping3) | The platform this pipeline builds, tests, scans and delivers — its own README covers the app end to end |
+| [observability](https://gitea.kood.tech/imranshiundu/observability) | The monitoring stack (Prometheus + Loki + Grafana, 4 dashboards, email alerts) — `./start.sh` there is a one-command reviewer demo that boots the platform automatically and verifies 14 requirements |
+
 ## Repository layout
 
 ```
